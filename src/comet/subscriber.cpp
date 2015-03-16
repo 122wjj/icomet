@@ -115,36 +115,54 @@ void Subscriber::sync_next_seq(){
 	this->send_chunk(seq_next, "next_seq", NULL);
 }
 
+//edit just for test. write immediately can be mauch faster when 1000K conn in one channel pub msg.
 void Subscriber::send_chunk(int seq, const char *type, const char *content){
 	if(content == NULL){
 		content = "";
 	}
 
 	struct evbuffer *buf = evhttp_request_get_output_buffer(this->req);
+	char data_buf[1024] = {0}; 
+	char out_buf[1152] = {0}; 
 	
 	if(this->type == POLL){
 		if(!this->callback.empty()){
-			evbuffer_add_printf(buf, "%s(", this->callback.c_str());
+			snprintf(data_buf,sizeof(data_buf), "%s(", this->callback.c_str());
 		}
 	}else if(this->type == IFRAME){
-		evbuffer_add_printf(buf, "%s", iframe_chunk_prefix.c_str());
+		snprintf(data_buf,sizeof(data_buf), "%s",iframe_chunk_prefix.c_str());
 	}
-
-	evbuffer_add_printf(buf,
+    
+    snprintf(data_buf+strlen(data_buf),sizeof(data_buf)-strlen(data_buf),
 		"{\"type\":\"%s\",\"cname\":\"%s\",\"seq\":%d,\"content\":\"%s\"}",
 		type, this->channel->name.c_str(), seq, content);
-
+    
 	if(this->type == POLL){
 		if(!this->callback.empty()){
 			evbuffer_add_printf(buf, ");");
+			snprintf(data_buf+strlen(data_buf),sizeof(data_buf)-strlen(data_buf), ");");
 		}
 	}else if(this->type == IFRAME){
-		evbuffer_add_printf(buf, "%s", iframe_chunk_suffix.c_str());
+		snprintf(data_buf+strlen(data_buf),sizeof(data_buf)-strlen(data_buf), "%s",iframe_chunk_suffix.c_str());
 	}
 
 	evbuffer_add_printf(buf, "\n");
-	evhttp_send_reply_chunk(this->req, buf);
-
+	//snprintf(data_buf,sizeof(data_buf), "\n");
+	strncat(data_buf, "\n", sizeof(data_buf));
+	
+	if ((this->req)->chunked) {
+		snprintf(out_buf, sizeof(out_buf), "%x\r\n%s\r\n", strlen(data_buf), data_buf);
+	}
+	
+	evhttp_connection * thisconn = (this->req)->evcon;
+	int thisfd = thisconn->fd;
+	unsigned int tosend_len = strlen(out_buf);
+	ssize_t immediate_sendedlen = ::write(thisfd, out_buf, tosend_len);
+	if(immediate_sendedlen < tosend_len ){
+	    log_debug("wujianjiang:: after write[%s], immediate_sendedlen is %d, ",out_buf, immediate_sendedlen);
+	    evbuffer_add_printf(buf, "%s", data_buf);
+        evhttp_send_reply_chunk(this->req, buf);
+	}
 	this->idle = 0;
 	if(this->type == POLL){
 		this->close();
